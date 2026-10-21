@@ -6,8 +6,8 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 
-from . import dupes, rules
-from .steam import CONTROLLER_CONFIGS_APPID, Library
+from . import dupes, rules, zips
+from .steam import CONTROLLER_CONFIGS_APPID, Client, Library
 
 MiB = 1 << 20
 GiB = 1 << 30
@@ -29,6 +29,16 @@ ROOT_LEFTOVER_FILE = re.compile(
 # their own copies), so they are left out of the duplicate search.
 NO_DUP_DIRS = {"steamapps", "windows", "program files", "program files (x86)", "programdata",
                "appdata", "node_modules", ".git", ".venv", "site-packages"}
+# Rebuildable caches seen on C: (user profiles and ProgramData).
+SHADER_EXT = ".ushaderprecache"
+SHADER_DIRS = {"shadercache", "shadercaches"}
+BROWSER_DIRS = {"user data", "ebwebview", "webview2", "htmlcache", "webviewcache"}
+# Folders in steamapps\common that Steam keeps without a game manifest.
+STEAM_TOOL_DIRS = {"steam controller configs", "steamworks shared"}
+DEV_CACHES = {".m2": ("repository", "Maven download cache; the next build downloads what it needs"),
+              ".p2": ("", "Eclipse p2 bundle pool; an Eclipse-based app installed with a shared "
+                          "pool needs it, so only if none is installed")}
+QUIET_DAYS = 7  # cache folders written to more recently than this are left alone
 REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
 
@@ -40,6 +50,7 @@ class Options:
     dup_min: int = 1 * MiB          # smallest file worth a duplicate check
     download_days: int = 180        # Downloads installers/archives older than this
     hash_dupes: bool = True
+    steam_root: str = None          # Steam client folder; None finds it, "" ignores Steam
 
 
 @dataclass
@@ -72,6 +83,8 @@ class Result:
     candidates: list = field(default_factory=list)  # dicts, see _cand
     kept: list = field(default_factory=list)        # (category, path, why)
     libraries: list = field(default_factory=list)
+    steam: Client = None
+    games: list = field(default_factory=list)       # (size, path, installed, name, last_played, lib)
 
 
 def _is_reparse(entry):
@@ -114,6 +127,8 @@ def walk(root, res):
 
 
 def _cand(res, category, path, reason, kind=None):
+    if rules.is_temp_path(path, res.root):
+        return  # in-progress installs and other tools' scratch files (pytest's included)
     t = res.dirs.get(path)
     if kind is None:
         kind = "dir" if t is not None else "file"
@@ -139,6 +154,18 @@ def _cand(res, category, path, reason, kind=None):
                            "size": size, "newest": newest, "reason": reason})
 
 
+def _game_folder(parts_low):
+    """True for a game's own folder: one or two levels under AppData\\Local or
+    Documents\\My Games, and not a browser/WebView profile (those keep their own
+    ShaderCache and are in use)."""
+    if any(p in BROWSER_DIRS for p in parts_low):
+        return False
+    for i in range(len(parts_low) - 1, 0, -1):
+        if parts_low[i] == "my games" or parts_low[i - 1:i + 1] == ["appdata", "local"]:
+            return 1 <= len(parts_low) - 1 - i <= 2
+    return False
+
+
 def _under(path, folder):
     return path.lower().startswith(folder.lower().rstrip("\\/") + os.sep)
 
@@ -152,6 +179,7 @@ def scan(root, opts=None, progress=None):
     by_size = defaultdict(list)
     log_hits, redist_hits, download_hits = [], [], []
     pom_dirs, target_dirs, steamapps = set(), [], []
+    zip_files, crash_files, shader_files, cache_dirs, source_downloads = [], [], [], [], []
     nfiles = 0
     root_depth = len(rules.path_parts(root))
 
@@ -162,15 +190,31 @@ def scan(root, opts=None, progress=None):
         rel_low = parts_low[root_depth:]  # below the scan root
         no_dup = any(p in NO_DUP_DIRS for p in rel_low)
         in_steam = "steamapps" in rel_low  # game data: sized per game instead
-        dl = "downloads" in parts_low
+        # A drive's or a user's Downloads, not a mod manager's downloads\ archive.
+        dl = rel_low[:1] == ["downloads"] or rel_low[0:1] == ["users"] and rel_low[2:3] == ["downloads"]
         # EA games run __Installer at launch, so its installers stay.
         redist_dir = any(REDIST_DIR.match(p) for p in rel_low) and "__installer" not in rel_low
         save_dir = rules.is_save_path(os.path.join(d, "x"))
+        crash_dir = parts_low[-3:] == ["appdata", "local", "crashdumps"]
+        names_low = {n.lower() for n, _s, _m in files}
         for s in subdirs:
-            if s.lower() == "steamapps":
-                steamapps.append(os.path.join(d, s))
-            elif s.lower() == "target":
-                target_dirs.append(os.path.join(d, s))
+            sl = s.lower()
+            sp = os.path.join(d, s)
+            if sl == "steamapps":
+                steamapps.append(sp)
+            elif sl == "target":
+                target_dirs.append(sp)
+            elif sl == "download" and "gameinfo.txt" in names_low:
+                source_downloads.append(sp)  # a Source engine game's server downloads
+            elif in_steam:
+                continue
+            elif sl == "squirreltemp" and parts_low[-2:] == ["appdata", "local"]:
+                cache_dirs.append(("installer-temp", sp, "Squirrel installer's leftover temp files"))
+            elif sl in SHADER_DIRS and _game_folder(parts_low):
+                cache_dirs.append(("shader-cache", sp, "shader cache; the program rebuilds it (first run may stutter)"))
+            elif sl in DEV_CACHES:
+                sub, why = DEV_CACHES[sl]
+                cache_dirs.append(("dev-cache", os.path.join(sp, sub) if sub else sp, why))
         for name, size, mtime in files:
             p = os.path.join(d, name)
             low = name.lower()
@@ -194,6 +238,12 @@ def scan(root, opts=None, progress=None):
                 redist_hits.append(p)
             if dl and ext in ARCHIVE_EXT and now - mtime > opts.download_days * DAY:
                 download_hits.append((p, mtime))
+            if ext == ".zip" and not no_dup and not in_steam:
+                zip_files.append(p)
+            if crash_dir:
+                crash_files.append(p)
+            elif ext == SHADER_EXT and not in_steam:
+                shader_files.append(p)
         nfiles += len(files)
         if progress and nfiles >= next_report:
             progress(f"{nfiles:,} files, at {d}")
@@ -206,7 +256,10 @@ def scan(root, opts=None, progress=None):
         if d != root and parent in res.dirs:
             res.dirs[parent].add(res.dirs[d])
 
-    _steam(res, steamapps, log_hits, redist_hits)
+    res.steam = Client(opts.steam_root)
+    _steam(res, steamapps, log_hits, redist_hits, source_downloads)
+    _caches(res, now, crash_files, shader_files, cache_dirs)
+    _extracted_zips(res, zip_files, progress)
     _root_leftovers(res, root)
     for t in target_dirs:
         if os.path.dirname(t).lower() in pom_dirs:
@@ -229,17 +282,23 @@ def scan(root, opts=None, progress=None):
     return res
 
 
-def _steam(res, steamapps, log_hits, redist_hits):
+def _steam(res, steamapps, log_hits, redist_hits, source_downloads):
     installed = []
     for sa in steamapps:
         lib = Library(sa)
         res.libraries.append(lib)
+        unlisted = res.steam.found and not res.steam.is_registered(sa)
         for folder, ok in lib.game_folders():
+            size = res.dirs[folder].size if folder in res.dirs else 0
+            appid, name = lib.app_of(folder)
+            res.games.append((size, folder, ok, name, res.steam.last_played.get(appid), lib))
             if ok:
                 installed.append(folder)
-            else:
-                _cand(res, "steam-orphan-folder", folder,
-                      "in steamapps\\common but no appmanifest claims it (game uninstalled)")
+            elif os.path.basename(folder).lower() not in STEAM_TOOL_DIRS:
+                why = "in steamapps\\common but no appmanifest claims it (game uninstalled)"
+                if unlisted:
+                    why += "; Steam doesn't list this library"
+                _cand(res, "steam-orphan-folder", folder, why)
         for sub in ("temp", "shadercache", os.path.join("workshop", "content")):
             base = os.path.join(sa, sub)
             try:
@@ -268,6 +327,43 @@ def _steam(res, steamapps, log_hits, redist_hits):
             _cand(res, "bundled-redist", p,
                   f"redist installer bundled with {os.path.basename(g)}; Steam may restore it on verify",
                   kind="file")
+    for p in source_downloads:
+        g = game_of(p)
+        if g and p in res.dirs and res.dirs[p].files:
+            _cand(res, "source-download-cache", p,
+                  f"maps/sprays/sounds {os.path.basename(g)} downloaded from community servers; "
+                  "fetched again when a server needs them")
+
+
+def _caches(res, now, crash_files, shader_files, cache_dirs):
+    for p in crash_files:
+        _cand(res, "crash-dump", p, "Windows Error Reporting crash dump", kind="file")
+    for p in shader_files:
+        _cand(res, "shader-cache", p, "Unreal shader precache; the game rebuilds it", kind="file")
+    for cat, p, why in cache_dirs:
+        t = res.dirs.get(p)
+        if t is None or not t.files:
+            continue
+        if now - t.newest < QUIET_DAYS * DAY:
+            res.kept.append((cat, p, f"written to in the last {QUIET_DAYS} days"))
+            continue
+        _cand(res, cat, p, why)
+
+
+def _extracted_zips(res, zip_files, progress=None):
+    for p in zip_files:
+        folder = os.path.splitext(p)[0]
+        if folder not in res.dirs:
+            continue
+        if progress:
+            progress(f"checking {p} against its folder")
+        found, total, missing = zips.check(p, folder)
+        if total and found == total:
+            _cand(res, "extracted-zip", p,
+                  f"all {total} files are in {os.path.basename(folder)}\\ (same size and CRC)", kind="file")
+        elif total and found:
+            res.kept.append(("extracted-zip", p, f"{found} of {total} files found in the folder; "
+                             f"missing e.g. {', '.join(missing[:3])}"))
 
 
 def _root_leftovers(res, root):

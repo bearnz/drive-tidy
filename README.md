@@ -20,8 +20,8 @@ uv run drive-tidy scan E:
 Read-only. Writes a folder `drive-tidy-E-<date>-<time>\` (or `--out <folder>`) with:
 
 - `report.md`: biggest folders (depth 1-3), large files (1 GB+), old files
-  (100 MB+, untouched for 3 years), duplicate groups, Steam game folder sizes,
-  and the candidates below.
+  (100 MB+, untouched for 3 years), duplicate groups, Steam games by size with
+  last-played dates, and the candidates below.
 - `candidates.csv`: one row per candidate, `approve` column empty.
 
 Put `y` in the `approve` column of the rows to bin, then:
@@ -43,21 +43,37 @@ whole drive.
 
 | Category | What | From |
 |---|---|---|
-| `steam-orphan-folder` | folder in `steamapps\common` that no `appmanifest_*.acf` claims (game uninstalled, folder left behind) | E:, N:, M: |
+| `steam-orphan-folder` | folder in `steamapps\common` that no `appmanifest_*.acf` claims (game uninstalled, folder left behind). Never `Steam Controller Configs` or `Steamworks Shared`. | E:, N:, M: |
 | `game-log-dump` | `.log`, `.dmp`, `.mdmp`, `output_log*.txt` inside an installed game's folder | E: |
 | `bundled-redist` | `.exe`/`.msi`/`.cab` under `_CommonRedist`, `Redist`, `DirectX`, `VCRedist`, ... in a game folder (not EA's `__Installer`, which runs at launch). Steam may put them back when it verifies the game. | E: |
 | `old-windows-leftover` | `WINDOWS`, `ProgramData`, `MSOCache`, `msdownld.tmp` and the VC++ 2008 installer files (`eula.*.txt`, `install.*`, `VC_RED.*`, ...) at the top of the scanned drive. Never on the system drive. | E:, N: |
 | `steam-empty-folder` | empty folder under `steamapps\temp`, `shadercache` or `workshop\content` for an app not installed in that library (never 241100, Steam Controller Configs) | E: |
 | `maven-target` | a `target` folder with a `pom.xml` beside it | A: |
-| `old-download` | installer or archive (`.exe .msi .zip .rar .7z .iso .img .tar .gz .cab`) in a `Downloads` folder, older than 180 days | N:, A: |
+| `old-download` | installer or archive (`.exe .msi .zip .rar .7z .iso .img .tar .gz .cab`) in a drive's `Downloads` or a user's `Users\<name>\Downloads`, older than 180 days. Mod managers' `downloads` folders are not included. | N:, A: |
 | `duplicate` | an extra byte-identical copy (size, then partial hash, then full hash) that sits in a `Downloads` folder. The copy outside Downloads, or the one without ` (1)`, is kept. Other duplicate groups are only listed in the report. | N: |
+| `extracted-zip` | a `.zip` whose every file is in the folder of the same name beside it, matched by size and CRC-32 in any subfolder. A zip with only some of its files there is listed under "kept" with what's missing. | N: |
+| `source-download-cache` | the `download` folder beside a Source game's `gameinfo.txt` (TF2's `tf\download`): maps and sprays from community servers | M: |
+| `crash-dump` | files in `AppData\Local\CrashDumps` (Windows Error Reporting) | C: |
+| `shader-cache` | `*.ushaderprecache` files, and `ShaderCache` folders in a game's own folder (one or two levels under `AppData\Local` or `Documents\My Games`). Browser and WebView2 profiles (`User Data`, `EBWebView`, ...) are never listed. | C: |
+| `installer-temp` | `AppData\Local\SquirrelTemp` | C: |
+| `dev-cache` | `.m2\repository` (Maven) and `.p2` (Eclipse bundle pool: only if no Eclipse-based app is installed) | C: |
+
+Cache folders (`shader-cache`, `installer-temp`, `dev-cache`) written to in the
+last 7 days are kept rather than listed.
+
+The report's Steam section lists every game folder with its size and when it
+was last played, from Steam's own `localconfig.vdf` (all local accounts). It
+also says whether Steam still lists each library (`libraryfolders.vdf`).
+Uninstalling stays your call, in Steam.
 
 ## Safety rules
 
 - **Never touched:** `System Volume Information`, `$RECYCLE.BIN`, `WindowsApps`,
   `WpSystem`, drive roots, and junctions/symlinks (not followed, and a folder
   holding one is never a candidate). Files Windows marks as reparse points,
-  such as OneDrive online-only files, are skipped too.
+  such as OneDrive online-only files, are skipped too. Nothing under
+  `AppData\Local\Temp` is ever a candidate (in-progress installers, other
+  tools' scratch files).
 - **Saves are never candidates:** any path under a folder named like `Saves`,
   `SaveGames`, `Saved`, `Saved Games`, `savedata`, `userdata`, `memcards`,
   `remote`, or a file like `*.sav`, `*.ess`, `*.fos`, `*.ps2`, `*.mcd`, `*.srm`,
@@ -92,6 +108,6 @@ characters won't match and show as `MISSING`.
 uv run pytest
 ```
 
-The tests build fake drives in temp folders and use a stand-in Recycle Bin, so
-they never touch the real one. One opt-in test sends a temp file to the real
+The tests build fake drives (and a fake Steam client) in temp folders and use a
+stand-in Recycle Bin, so they never touch the real one or read your Steam data. One opt-in test sends a temp file to the real
 Recycle Bin on C: (`DRIVE_TIDY_REAL_BIN=1 uv run pytest`).

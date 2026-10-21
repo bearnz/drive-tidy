@@ -35,6 +35,12 @@ def is_save_path(path):
     return bool(SAVE_DIR.match(last)) or os.path.splitext(last)[1].lower() in SAVE_EXT
 
 
+def is_temp_path(path, root):
+    """True if, below root, the path passes through AppData\\Local\\Temp."""
+    low = [p.lower() for p in path_parts(path)[len(path_parts(root)):]]
+    return any(low[i:i + 3] == ["appdata", "local", "temp"] for i in range(len(low) - 2))
+
+
 def is_protected_path(path):
     """True if the path is a drive root or sits under a skipped directory."""
     parts = path_parts(path)

@@ -121,13 +121,29 @@ def write_report(res, path, top=25):
         add("Uninstalling games is your call, in Steam. Game files are left out of the "
             "large/old file lists above.")
         add("")
-        for lib in res.libraries:
-            games = [(res.dirs[p].size, p, ok) for p, ok in lib.game_folders() if p in res.dirs]
-            add(f"`{lib.steamapps}`: {len(lib.app_ids)} app manifests, "
-                f"{human(sum(g[0] for g in games))} in {len(games)} game folders")
+        steam = res.steam
+        if steam is not None and steam.found:
+            add("Last played comes from Steam's `localconfig.vdf`. Steam only records games "
+                "started through Steam, so modded games launched another way may show older dates.")
             add("")
-            for size, p, ok in sorted(games, reverse=True)[:top]:
-                add(f"- {human(size)} `{os.path.basename(p)}`" + ("" if ok else " (no manifest)"))
+        year_ago = res.started - 365 * 86400
+        for lib in res.libraries:
+            games = [g for g in res.games if g[5] is lib]
+            listed = "" if steam is None or not steam.found else (
+                ", listed in Steam" if steam.is_registered(lib.steamapps) else ", **not listed in Steam**")
+            stale = [g for g in games if g[2] and (g[4] or 0) < year_ago]
+            add(f"`{lib.steamapps}`: {len(lib.app_ids)} app manifests{listed}, "
+                f"{human(sum(g[0] for g in games))} in {len(games)} game folders. "
+                f"Not played for a year or more: {len(stale)} games, {human(sum(g[0] for g in stale))}.")
+            add("")
+            add("| Size | Game | Last played |")
+            add("|---:|---|---|")
+            for size, p, ok, name, played, _lib in sorted(games, key=lambda g: -g[0])[:top * 2]:
+                label = name or os.path.basename(p)
+                when = day(played) if played else ("never" if steam is not None and steam.found else "?")
+                add(f"| {human(size)} | {label} | {when if ok else 'no manifest'} |")
+            if len(games) > top * 2:
+                add(f"| | ... and {len(games) - top * 2} more | |")
             add("")
     if res.errors:
         add("## Unreadable paths")
