@@ -1,2 +1,1 @@
-def main() -> None:
-    print("Hello from drive-tidy!")
+"""drive-tidy: find clean-up candidates on a drive, recycle the approved ones."""
