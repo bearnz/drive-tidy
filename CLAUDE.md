@@ -24,6 +24,7 @@ uv run pytest
 - Judgement calls (uninstalling games, recordings, media) stay with Josh.
   Plex media belongs to bearnz/media-tidy.
 - Scan output (`drive-tidy-*/`) lists personal files: keep it out of git.
-- `reference/` holds the original one-off scripts; not imported anywhere.
+- One code path for every drive. Keep rules drive-agnostic: no drive letters
+  or per-drive branches, apart from the system-drive guard in `_root_leftovers()`.
 - Conventions are in ~/.claude/CLAUDE.md (feature branches -> PR -> main,
   push only on approval, provenance labels).

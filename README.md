@@ -1,9 +1,9 @@
 # drive-tidy
 
 Find clean-up candidates on a Windows drive, then send only the ones you
-approve to the Recycle Bin. Built from the October 2026 one-off clean-ups of
-C:, E:, N:, A: and M: (their scripts are in [`reference/`](reference/)).
-Python 3.10+, standard library only. Plex media folders are
+approve to the Recycle Bin. One command for any drive (or folder): it replaces
+the per-drive one-off scripts from the October 2026 clean-ups of C:, E:, N:,
+A: and M:. Python 3.10+, standard library only. Plex media folders are
 [media-tidy](https://github.com/bearnz/media-tidy)'s job, not this one's.
 
 The split is the same as in those sessions: the tool finds and checks, you
@@ -41,7 +41,11 @@ whole drive.
 
 ## Candidate categories
 
-| Category | What | From |
+Every scan checks every category, whatever the drive. A category that has
+nothing to match (no Steam library, no `AppData`) finds nothing. The last
+column only records which clean-up the rule was first approved in.
+
+| Category | What | First approved on |
 |---|---|---|
 | `steam-orphan-folder` | folder in `steamapps\common` that no `appmanifest_*.acf` claims (game uninstalled, folder left behind). Never `Steam Controller Configs` or `Steamworks Shared`. | E:, N:, M: |
 | `game-log-dump` | `.log`, `.dmp`, `.mdmp`, `output_log*.txt` inside an installed game's folder | E: |
