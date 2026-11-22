@@ -115,3 +115,12 @@ uv run pytest
 The tests build fake drives (and a fake Steam client) in temp folders and use a
 stand-in Recycle Bin, so they never touch the real one or read your Steam data. One opt-in test sends a temp file to the real
 Recycle Bin on C: (`DRIVE_TIDY_REAL_BIN=1 uv run pytest`).
+
+## Copyright
+
+Copyright (c) 2026 Josh (github.com/bearnz). All rights reserved.
+
+No licence is granted. You are welcome to read this code and to fork it on
+GitHub; you may not use, copy, modify or redistribute it without permission.
+See [NOTICE](NOTICE) for the terms, and open an issue if you would like to use
+any of it.
